@@ -44,7 +44,7 @@ static int parse_detail(void* data, int argc, const char** argv) {
         *(int*) data = DETAIL_HIGH;
         return 1;
     } else {
-        fprintf(stderr, "invalid level of detail `%s`\n", argv[0]);
+        arg_err("invalid level of detail `%s`\n", argv[0]);
 
         return -1;
     }

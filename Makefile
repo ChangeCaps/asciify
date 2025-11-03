@@ -3,7 +3,7 @@ OBJECTS = $(SOURCES:src/%.c=out/%.o)
 DEPENDS = $(OBJECTS:.o=.d)
 
 CC = clang
-CCFLAGS = -Wall -Wextra -g
+CCFLAGS = -Wall -Wextra -g -std=c99
 CCLINKS = -lm -lcurl
 
 .PHONY: all run clean

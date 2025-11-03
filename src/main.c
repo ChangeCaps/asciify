@@ -7,61 +7,31 @@
 #include <curl/curl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
 
-#include "arg.h"
+#include "xterm.h"
+#include "download.h"
+#include "opts.h"
 
-struct opts {
-    char* input;
-    int   width;
-    int   height;
-
-    bool  has_width;
-    bool  has_height;
-
-    bool  color;
+const char *const tables[] = {
+    " .:-=+*#%@",
+    " _.,-=+:;cba!?0123456789$W#@",
+    " '`^\",:;Il!i><~+_-?][}{1)(|\\//tfjrxnuvczXYUKCLQ0OZmwqpdbkhao*#MW&8%B@$",
 };
 
-struct opts parse_opts(int argc, const char** argv) {
-    struct opts opts = {0};
-    opts.width = 100;
-    opts.height = 50;
-
-    cmd main = cmd_new("asciify");
-    cmd_help(main, "Asciify");
-
-    arg input = cmd_arg(main, "input");
-    arg_help (input, "search term");
-    arg_value(input, &opts.input, arg_str);
-
-    arg width = cmd_arg(main, "width");
-    arg_help (width, "width of output image");
-    arg_usage(width, "<WIDTH>");
-    arg_long (width, "width");
-    arg_check(width, &opts.has_width);
-    arg_value(width, &opts.width, arg_int);
-
-    arg height = cmd_arg(main, "height");
-    arg_help (height, "height of output image");
-    arg_usage(height, "<HEIGHT>");
-    arg_long (height, "height");
-    arg_check(height, &opts.has_height);
-    arg_value(height, &opts.height, arg_int);
-
-    arg color = cmd_arg(main, "color");
-    arg_help (color, "enable color rendering");
-    arg_long (color, "color");
-    arg_check(color, &opts.color);
-
-    cmd_parse(main, argc, argv);
-
-    return opts;
-}
-
-const char table[] = " .-=+*x#$&X@";
 const char edges[] = "|/-\\|/-\\";
 const int colors[] = { 31, 33, 32, 36, 34, 35 };
 const int colors_high[] = { 91, 93, 92, 96, 94, 95 };
+
+typedef struct bytes {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    uint8_t a;
+} bytes;
 
 typedef struct pixel {
     float r;
@@ -70,19 +40,38 @@ typedef struct pixel {
     float a;
 } pixel;
 
+static bytes read_bytes(
+    const uint8_t* image,
+    int            x,
+    int            y,
+    int            w
+) {
+    uint8_t r = image[(y * w + x) * 4 + 0];
+    uint8_t g = image[(y * w + x) * 4 + 1];
+    uint8_t b = image[(y * w + x) * 4 + 2];
+    uint8_t a = image[(y * w + x) * 4 + 3];
+
+    return (bytes) {r, g, b, a};
+}
+
 static pixel read_pixel(
     const uint8_t* image,
     int            x,
     int            y,
     int            w
 ) {
-    float r = (float) image[(y * w + x) * 4 + 0] / 255.0;
-    float g = (float) image[(y * w + x) * 4 + 1] / 255.0;
-    float b = (float) image[(y * w + x) * 4 + 2] / 255.0;
-    float a = (float) image[(y * w + x) * 4 + 3] / 255.0;
-
-    return (pixel) {r, g, b, a};
+    bytes bytes = read_bytes(image, x, y, w);
+    return (pixel) {
+        .r = bytes.r / 255.0,
+        .g = bytes.g / 255.0,
+        .b = bytes.b / 255.0,
+        .a = bytes.a / 255.0,
+    };
 }
+
+#define MIN(a, b) ((a) <= (b) ? (a) : (b))
+#define MAX(a, b) ((a) >= (b) ? (a) : (b))
+#define CLAMP(x, min, max) MIN(MAX(x, min), max)
 
 static float read_lightness(
     const uint8_t* image,
@@ -91,118 +80,28 @@ static float read_lightness(
     int            w
 ) {
     pixel p = read_pixel(image, x, y, w);
+    float l = 0.2126 * p.r + 0.7152 * p.g + 0.0722 * p.b;
 
-    return 0.2126 * p.r + 0.7152 * p.g + 0.0722 * p.b;
+    return CLAMP(l, 0.0, 1.0);
 }
 
-struct image_data {
-    size_t   size;
-    uint8_t* data;
-};
+static int run(struct opts opts) {
+    size_t urlc;
+    char** urls;
 
-static size_t search_write_callback(
-    void*  contents,
-    size_t size,
-    size_t nmemb,
-    void*  user_data
-) {
-    size_t total = size * nmemb;
-    char** response = user_data;
-
-    *response = realloc(*response, strlen(*response) + total + 1);
-
-    strncat(*response, contents, total);
-
-    return total;
-}
-
-static size_t image_write_callback(
-    void*  contents,
-    size_t size,
-    size_t nmemb,
-    void*  user_data
-) {
-    size_t total = size * nmemb;
-    struct image_data* image = user_data;
-
-    image->data = realloc(image->data, image->size + total);
-
-    memcpy(
-        image->data + image->size,
-        contents,
-        total
-    );
-
-    image->size += total;
-
-    return total;
-}
-
-int main(int argc, const char** argv) {
-    struct opts opts = parse_opts(argc, argv);
-
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-    CURL* curl = curl_easy_init();
-    char* response = calloc(1, 1);
-
-    size_t len = snprintf(
-        NULL,
-        0, 
-        "https://www.google.com/search?tbm=isch&q=%s",
-        opts.input
-    );
-
-    char* url = malloc(len + 1);
-
-    snprintf(
-        url,
-        len + 1,
-        "https://www.google.com/search?tbm=isch&q=%s",
-        opts.input
-    );
-
-    if (!curl) return 1;
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, search_write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-
-    if (curl_easy_perform(curl) != CURLE_OK) {
-        printf("image search failed");
+    if (!search_images(&urlc, &urls, opts.offset, opts.input)) {
+        printf("search failed\n");
         return 1;
     }
 
-    curl_easy_cleanup(curl);
+    srand(time(NULL));
 
-    char* image_url = NULL;
-    const char* needle = "<img class=\"DS1iW\" alt=\"\" src=\"";
-    while ((response = strstr(response, needle))) {
-        response += strlen(needle);
+    size_t idx = rand() % urlc;
 
-        char* end = strstr(response, "\"");
-        if (!end) return 1;
+    image_data image_data;
 
-        image_url = malloc(end - response + 1);
-        memcpy(image_url, response, end - response);
-        image_url[end - response] = '\0';
-
-        break;
-    }
-
-    curl = curl_easy_init();
-
-    struct image_data image_data = {0};
-
-    curl_easy_setopt(curl, CURLOPT_URL, image_url);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, image_write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &image_data);
-
-    if (curl_easy_perform(curl) != CURLE_OK) {
-        printf("image download failed");
+    if (!download_image(&image_data, urls[idx])) {
+        printf("download failed\n");
         return 1;
     }
 
@@ -216,9 +115,32 @@ int main(int argc, const char** argv) {
         4
     );
 
-    if (!opts.has_width) {
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+
+    if (!opts.has_width && !opts.has_height) { 
+        float aspect = (float) width / (float) height * 2.0;
+
+        // fit on screen
+        w.ws_row -= 2;
+
+        if ((float) w.ws_col / aspect > (float) w.ws_row) {
+            opts.width  = (int) floorf((float) w.ws_row * aspect);
+            opts.height = w.ws_row;
+        } else {
+            opts.width  = w.ws_col;
+            opts.height = (int) floorf((float) w.ws_col / aspect);
+        }
+    }
+
+    if (!opts.has_width && opts.has_height) {
         float aspect = (float) width / (float) height * 2.0;
         opts.width = (int) floorf((float) opts.height * aspect);
+    }
+
+    if (opts.has_width && !opts.has_height) {
+        float aspect = (float) width / (float) height * 2.0;
+        opts.height = (int) floorf((float) opts.width / aspect);
     }
 
     uint8_t* scaled = malloc(opts.width * opts.height * 4);
@@ -235,15 +157,43 @@ int main(int argc, const char** argv) {
         4
     );
 
+    if (opts.center) {
+        for (int i = 0; i < (w.ws_row - opts.height) / 2; i++) {
+            printf("\n");
+        }
+    }
+
+    printf("\n");
+
     for (int y = 0; y < opts.height; y++) {
+        if (opts.center) {
+            for (int i = 0; i < (w.ws_col - opts.width) / 2; i++) {
+                printf(" ");
+            }
+        }
+
         for (int x = 0; x < opts.width; x++) {
             pixel p = read_pixel(scaled, x, y, opts.width);
 
-            float l11 = read_lightness(scaled, x, y, opts.width);
+            if (opts.has_quant) {
+                p.r = roundf(p.r * opts.quant) / opts.quant;
+                p.g = roundf(p.g * opts.quant) / opts.quant;
+                p.b = roundf(p.b * opts.quant) / opts.quant;
+                p.a = roundf(p.a * opts.quant) / opts.quant;
+            }
 
-            int idx = floorf(l11 * (float) ((sizeof table) - 2));
+            if (opts.xterm) {
+                bytes bytes = {
+                    .r = roundf(p.r * 255.0),
+                    .g = roundf(p.g * 255.0),
+                    .b = roundf(p.b * 255.0),
+                    .a = roundf(p.a * 255.0),
+                };
 
-            if (opts.color) {
+                uint8_t index = rgb_to_xterm(bytes.r, bytes.g, bytes.b);
+
+                printf("\e[38;5;%hhim", index);
+            } if (opts.ansi) {
                 float cmax = fmaxf(fmaxf(p.r, p.g), p.b);
                 float cmin = fminf(fminf(p.r, p.g), p.b);
                 float dc   = (cmax - cmin) / 2.0;
@@ -270,6 +220,8 @@ int main(int argc, const char** argv) {
                 }
             }
 
+            float l11 = read_lightness(scaled, x, y, opts.width);
+
             if (x > 0 && x < opts.width - 1 && y > 1 && y < opts.height - 1) {
                 float l00 = read_lightness(scaled, x - 1, y - 1, opts.width);
                 float l10 = read_lightness(scaled, x    , y - 1, opts.width);
@@ -295,8 +247,10 @@ int main(int argc, const char** argv) {
                     continue;
                 }
             }
+
+            int idx = floorf(l11 * (float) (strlen(tables[opts.detail]) - 1));
             
-            printf("%c", table[idx]);
+            printf("%c", tables[opts.detail][idx]);
         }
 
         printf("\n");
@@ -304,4 +258,28 @@ int main(int argc, const char** argv) {
 
     stbi_image_free(image);
     free(scaled);
+
+    return 0;
+}
+
+int main(int argc, const char** argv) {
+    struct opts opts = parse_opts(argc, argv);
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    int result = 0;
+
+    if (opts.has_watch) {
+        while (result == 0) {
+            result = run(opts);
+
+            sleep(opts.watch);
+        }  
+    } else {
+        result = run(opts);
+    }
+
+    curl_global_cleanup();
+
+    return result;
 }

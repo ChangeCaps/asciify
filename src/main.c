@@ -256,6 +256,12 @@ static int run(struct opts opts) {
         printf("\n");
     }
 
+    if (opts.center) {
+        for (int i = 0; i < (w.ws_row - opts.height) / 2; i++) {
+            printf("\n");
+        }
+    }
+
     stbi_image_free(image);
     free(scaled);
 

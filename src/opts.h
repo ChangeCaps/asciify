@@ -65,7 +65,7 @@ struct opts parse_opts(int argc, const char** argv) {
         "Search for an image and display it as ASCII art."
     );
 
-    arg input = cmd_arg(main, "input");
+    arg input = cmd_arg(main, "search term");
     arg_help (input, "search term");
     arg_value(input, &opts.input, arg_str);
 
@@ -145,6 +145,7 @@ struct opts parse_opts(int argc, const char** argv) {
     arg_value(quant, &opts.quant, arg_int);
 
     cmd_parse(main, argc, argv);
+    cmd_free(main);
 
     return opts;
 }

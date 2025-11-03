@@ -9,6 +9,7 @@
 typedef struct arg_parser arg_parser;
 typedef struct arg* arg;
 typedef struct cmd* cmd;
+typedef struct cmd* subcmd;
 
 // Create new `cmd`.
 static cmd cmd_new(const char* name);
@@ -24,6 +25,9 @@ static void cmd_enum(cmd cmd, void* data, int value);
 static cmd cmd_subcmd(cmd cmd, const char* name);
 // Add `arg` with `name` to `cmd`.
 static arg cmd_arg(cmd cmd, const char* name);
+
+// Add `help` subcommand to `cmd` that displays help info for subcommands.
+static cmd cmd_add_help_subcmd(cmd cmd);
 
 // Validate `cmd` returning `false` if invalid.
 static bool cmd_validate(const cmd cmd);
@@ -66,24 +70,24 @@ struct arg_parser {
 // Argument in a `cmd`.
 struct arg {
     // Name of the argument.
-    const char*       name; 
+    const char* name;
     // Help message of the argument.
-    const char*       help;
+    const char* help;
     // Usage message of the argument.
-    const char*       usage;
+    const char* usage;
 
     // Short name of the argument, `'\0'` if not set.
-    char              short_name;
+    char        short_name;
     // Long name of the argument, may be `NULL`.
-    const char*       long_name;
+    const char* long_name;
 
     // Set when argument is parsed.
-    bool*             check;
+    bool*       check;
 
     // User data of the parser.
-    void*             data;
+    void*       data;
     // Argument parser.
-    arg_parser        parser;
+    arg_parser  parser;
 };
 
 // Command line command.
@@ -117,6 +121,17 @@ struct cmd {
     // Parent command, may be `NULL`.
     cmd         parent;
 };
+
+// Parser for required `const char*`.
+static const arg_parser arg_str;
+// Parser for required `int`.
+static const arg_parser arg_int;
+// Parser for number of instances, e.g. `-vvv` parsed as 3.
+static const arg_parser arg_count;
+// Parser for required `float`.
+static const arg_parser arg_float;
+
+/* ----- implementation ----- */
 
 // Check if an `arg` is an option.
 static inline bool arg__is_option(const arg arg) {
@@ -297,11 +312,8 @@ static inline void cmd_fprint_usage(
         fprintf(file, " [command]");
     }
 
-    fprintf(file, "\e[0;0m\n");
-
-    cmd__fprint_arguments(file, cmd);
-    cmd__fprint_options(file, cmd);
-    cmd__fprint_commands(file, cmd);
+    fprintf(file, "\e[0;0m");
+    fprintf(file, "\n");
 }
  
 static inline void cmd_fprint_help(
@@ -313,6 +325,10 @@ static inline void cmd_fprint_help(
     }
 
     cmd_fprint_usage(file, cmd);
+
+    cmd__fprint_arguments(file, cmd);
+    cmd__fprint_options(file, cmd);
+    cmd__fprint_commands(file, cmd);
 }
 
 static int arg__parse_help(void* data, int argc, const char** argv) {
@@ -324,7 +340,7 @@ static int arg__parse_help(void* data, int argc, const char** argv) {
     exit(0);
 }
 
-static const arg_parser arg__help_parser = {
+static const arg_parser arg__help = {
     .parse = arg__parse_help,
     .count = 0,
 };
@@ -353,11 +369,11 @@ static inline cmd cmd_new(
 
     /* create help option */
 
-    struct arg* help_arg = cmd_arg(cmd, "help");
+    arg help_arg = cmd_arg(cmd, "help");
     arg_help (help_arg, "print help");
     arg_short(help_arg, 'h');
     arg_long (help_arg, "help");
-    arg_value(help_arg, cmd, arg__help_parser);
+    arg_value(help_arg, cmd, arg__help);
 
     return cmd;
 }
@@ -442,7 +458,7 @@ static inline arg cmd_arg(
     arg->short_name = '\0';
     arg->long_name  = NULL;
 
-    arg->check     = NULL;
+    arg->check      = NULL;
 
     arg->data       = NULL;
     arg->parser     = (arg_parser){0};
@@ -450,6 +466,57 @@ static inline arg cmd_arg(
     cmd->args_len++;
 
     return arg;
+}
+
+static inline int cmd__parse_help(
+    void*        data,
+    int          argc,
+    const char** argv
+) {
+    cmd curr = data;
+
+    for (int i = 0; i < argc; i++) {
+        bool cmd_found = false;
+
+        for (size_t j = 0; j < curr->cmds_len; j++) {
+            if (strcmp(curr->cmds[j]->name, argv[i]) != 0) continue;
+
+            curr = curr->cmds[j];  
+            cmd_found = true;
+            break;
+        }
+
+        if (!cmd_found) {
+            arg_err("no such subcommand:");
+            fprintf(stderr, "\e[0;36m");
+            cmd__fprint_path(stderr, curr);
+            fprintf(stderr, " %s", argv[i]);
+            fprintf(stderr, "\e[0;0m");
+            fprintf(stderr, "\n\n");
+
+            return -1;
+        }
+    }
+
+    cmd_fprint_help(stderr, curr);
+
+    exit(0);
+}
+
+static const arg_parser cmd__help = {
+    .parse = cmd__parse_help,
+    .count = 0,
+};
+
+static inline cmd cmd_add_help_subcmd(cmd cmd) {
+    subcmd help = cmd_subcmd(cmd, "help"); 
+    cmd_help(help, "print help");
+    cmd_desc(help, "display help for a subcommand");
+
+    arg arg = cmd_arg(help, "command");
+    arg_value(arg, cmd, cmd__help);
+
+    return cmd;
 }
 
 static inline void arg_help(
@@ -567,29 +634,45 @@ static inline bool cmd_validate(const cmd cmd) {
     return valid;
 }
 
+static inline void cmd__print_try_help() {
+    fprintf(stderr, "for more information, try '");
+    fprintf(stderr, "\e[0;36m");
+    fprintf(stderr, "--help");
+    fprintf(stderr, "\e[0;0m");
+    fprintf(stderr, "'.\n");
+}
+
 static inline int cmd__parse_arg(
-    const cmd    cmd,
     const arg    arg,
     int          argc,
     const char** argv
 ) {
     if (argc < (int) arg->parser.count) {
-        arg_err("too few arguments, expected:\n");
+        arg_err("too few arguments for:\n");
         fprintf(stderr, "  ");
         fprintf(stderr, "\e[0;36m");
 
         if (arg__is_option(arg)) {
-            fprintf(stderr, "%s", argv[-1]);
-            if (arg->usage) fprintf(stderr, " %s", arg->usage);
-        } else {
-            if (arg->usage) fprintf(stderr, "%s", arg->usage);
-            else            fprintf(stderr, "<%s>", arg->name);
+            if (arg->short_name != '\0') {
+                fprintf(stderr, "-%c", arg->short_name);
+
+                if (arg->long_name) {
+                    fprintf(stderr, ", --%s", arg->long_name);
+                }
+            } else {
+                fprintf(stderr, "--%s", arg->long_name);
+            }
+
+            fprintf(stderr, " ");
         }
+
+        if (arg->usage) fprintf(stderr, "%s", arg->usage);
+        else            fprintf(stderr, "<%s>", arg->name);
 
         fprintf(stderr, "\e[0;0m");
         fprintf(stderr, "\n\n");
+        cmd__print_try_help();
 
-        cmd_fprint_usage(stderr, cmd);
         exit(0);
     }
 
@@ -598,13 +681,12 @@ static inline int cmd__parse_arg(
     if (arg->parser.parse) {
         int count = arg->parser.parse(
             arg->data,
-            (int) arg->parser.count,
+            argc,
             &argv[0]
         );
 
         if (count < 0) {
-            fprintf(stderr, "\n");
-            cmd_fprint_usage(stderr, cmd);
+            cmd__print_try_help();
             exit(0);
         }
 
@@ -625,11 +707,14 @@ static inline int cmd__parse_long(
         if (!arg->long_name)                          continue;
         if (strcmp(arg->long_name, argv[0] + 2) != 0) continue;
 
-        return cmd__parse_arg(cmd, arg, argc - 1, argv + 1);
+        return cmd__parse_arg(arg, argc - 1, argv + 1);
     }
 
     arg_err("no such option: `%s`\n\n", argv[0]);
     cmd_fprint_usage(stderr, cmd);
+    fprintf(stderr, "\n");
+    cmd__print_try_help();
+
     exit(0);
 }
 
@@ -641,6 +726,9 @@ static inline int cmd__parse_short(
     if (argv[0][1] == '\0') {
         arg_err("no such option: `%s`\n\n", argv[0]);
         cmd_fprint_usage(stderr, cmd);
+        fprintf(stderr, "\n");
+        cmd__print_try_help();
+
         exit(0);
     }
 
@@ -653,7 +741,6 @@ static inline int cmd__parse_short(
             if (arg->short_name != argv[0][i]) continue;
 
             count += cmd__parse_arg(
-                cmd,
                 arg,
                 argc - 1 - count,
                 argv + 1 + count
@@ -662,8 +749,11 @@ static inline int cmd__parse_short(
             goto end;
         }
 
-        arg_err("no such option: `%s`\n\n", argv[0]);
+        arg_err("no such option: `-%c`\n\n", argv[0][i]);
         cmd_fprint_usage(stderr, cmd);
+        fprintf(stderr, "\n");
+        cmd__print_try_help();
+
         exit(0);
 
         end: continue;
@@ -677,6 +767,14 @@ static inline void cmd_parse(
     int          argc,
     const char** argv
 ) {
+    if (!cmd->parent
+        && argc == 1
+        && (cmd__option_count(cmd) < cmd->args_len
+            || cmd->cmds_len > 0)) {
+        cmd_fprint_help(stderr, cmd);
+        exit(0);
+    }
+
     if (cmd->uenum) *cmd->uenum = cmd->value;
 
     // index of the current positional argument in the command
@@ -704,7 +802,7 @@ static inline void cmd_parse(
 
             if (arg__is_option(arg)) continue;
 
-            i += cmd__parse_arg(cmd, arg, argc - i, argv + i) - 1;
+            i += cmd__parse_arg(arg, argc - i, argv + i) - 1;
 
             found_positional = true;
             break;
@@ -722,18 +820,33 @@ static inline void cmd_parse(
         // report error and exit
         arg_err("no such command: `%s`\n\n", argv[i]);
         cmd_fprint_usage(stderr, cmd);
+        fprintf(stderr, "\n");
+        cmd__print_try_help();
+
         exit(0);
     }
 
     // if more positional arguments are expected, report error and exit
+    bool needs_arguments = false;
+
     while (index < cmd->args_len) {
         arg arg = cmd->args[index];
         index++;
 
         if (arg__is_option(arg)) continue;
-        if (arg->parser.count == 0) continue;
+        if (arg->parser.count == 0) {
+            if (arg->parser.parse) {
+                cmd__parse_arg(arg, 0, NULL);
+            }
 
-        arg_err("the following arguments were not provided:\n"); 
+            continue;
+        }
+
+        if (!needs_arguments) {
+            arg_err("the following arguments were not provided:\n"); 
+            needs_arguments = true;
+        }
+        
         fprintf(stderr, "\e[0;36m");
 
         if (arg->usage) fprintf(stderr, "  %s\n\n", arg->usage);
@@ -742,12 +855,19 @@ static inline void cmd_parse(
         fprintf(stderr, "\e[0;0m");
 
         cmd_fprint_usage(stderr, cmd);
-        exit(0);
+        fprintf(stderr, "\n");
+        cmd__print_try_help();
     }
+    
+    if (needs_arguments) exit(0);
 
     // if subcommand is expected, report error and exit
     if (cmd->cmds_len > 0) {
-        cmd_fprint_help(stderr, cmd);
+        arg_err("expected a command\n\n");
+        cmd_fprint_usage(stderr, cmd);
+        fprintf(stderr, "\n");
+        cmd__print_try_help();
+
         exit(0);
     }
 }

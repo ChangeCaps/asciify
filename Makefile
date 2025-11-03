@@ -2,8 +2,8 @@ SOURCES = $(wildcard src/*.c)
 OBJECTS = $(SOURCES:src/%.c=out/%.o)
 DEPENDS = $(OBJECTS:.o=.d)
 
-CC = clang
-CCFLAGS = -Wall -Wextra -g -std=c99
+CC = gcc
+CCFLAGS = -Wall -Wextra -g -std=c99 -fsanitize=address
 CCLINKS = -lm -lcurl
 
 .PHONY: all run clean

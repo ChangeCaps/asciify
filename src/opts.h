@@ -18,6 +18,8 @@ struct opts {
 
     bool  center;
 
+    bool  edge;
+
     bool  ansi;
     bool  xterm;
 
@@ -60,7 +62,7 @@ struct opts parse_opts(int argc, const char** argv) {
     cmd_desc(
         main,
         "Asciify\n\n"
-        "search for an image and display it as ASCII art."
+        "Search for an image and display it as ASCII art."
     );
 
     arg input = cmd_arg(main, "input");
@@ -101,6 +103,12 @@ struct opts parse_opts(int argc, const char** argv) {
     arg_long (center, "center");
     arg_short(center, 'c');
     arg_check(center, &opts.center);
+
+    arg edge = cmd_arg(main, "edge");
+    arg_help (edge, "enable edge enhancement");
+    arg_long (edge, "edge");
+    arg_short(edge, 'e');
+    arg_check(edge, &opts.edge);
 
     arg detail = cmd_arg(main, "detail");
     arg_help (detail, "level of detail in character set");

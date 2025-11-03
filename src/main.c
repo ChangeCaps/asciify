@@ -222,7 +222,7 @@ static int run(struct opts opts) {
 
             float l11 = read_lightness(scaled, x, y, opts.width);
 
-            if (x > 0 && x < opts.width - 1 && y > 1 && y < opts.height - 1) {
+            if (x > 0 && x < opts.width - 1 && y > 1 && y < opts.height - 1 && opts.edge) {
                 float l00 = read_lightness(scaled, x - 1, y - 1, opts.width);
                 float l10 = read_lightness(scaled, x    , y - 1, opts.width);
                 float l20 = read_lightness(scaled, x + 1, y - 1, opts.width);

@@ -57,7 +57,11 @@ struct opts parse_opts(int argc, const char** argv) {
     opts.detail = DETAIL_MID;
 
     cmd main = cmd_new("asciify");
-    cmd_help(main, "Asciify");
+    cmd_desc(
+        main,
+        "Asciify\n\n"
+        "search for an image and display it as ASCII art."
+    );
 
     arg input = cmd_arg(main, "input");
     arg_help (input, "search term");

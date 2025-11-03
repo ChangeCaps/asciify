@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <assert.h>
+#include <stdarg.h>
 
 typedef struct arg_parser arg_parser;
 typedef struct arg* arg;
@@ -37,6 +37,7 @@ struct arg {
 struct cmd {
     const char* name;
     const char* help;
+    const char* desc;
 
     int*        data;
     int         value;
@@ -47,7 +48,9 @@ struct cmd {
 
     size_t      cmds_len;
     size_t      cmds_cap;
-    cmd*       cmds;
+    cmd*        cmds;
+
+    cmd         parent;
 };
 
 static inline bool arg_is_option(const arg arg) {
@@ -74,24 +77,32 @@ static inline void cmd_fprint_arguments(
 ) {
     if (cmd_option_count(cmd) < cmd->args_len) {
         fprintf(file, "\n");
+        fprintf(file, "\e[0;32m");
         fprintf(file, "arguments:\n");
+        fprintf(file, "\e[0;0m");
 
         for (size_t i = 0; i < cmd->args_len; i++) {
             arg arg = cmd->args[i];
 
             if (arg_is_option(arg)) continue;
 
-            fprintf(file, "  <%s>", arg->name);
-            size_t len = 2 + strlen(arg->name);
+            fprintf(file, "\e[0;36m");
+
+            size_t len = 0;
 
             if (arg->usage) {
-                fprintf(file, " %s", arg->usage);
-                len += 1 + strlen(arg->usage);
+                fprintf(file, "  %s", arg->usage);
+                len += strlen(arg->usage);
+            } else {
+                fprintf(file, "  <%s>", arg->name);
+                len += 2 + strlen(arg->name);
             }
+
+            fprintf(file, "\e[0;0m");
 
             if (arg->help) {
                 for (size_t j = len; j < 32; j++) fprintf(file, " ");
-                fprintf(file, "%s", arg->help);
+                fprintf(file, " %s", arg->help);
             }
 
             fprintf(file, "\n");
@@ -105,7 +116,9 @@ static inline void cmd_fprint_options(
 ) {
     if (cmd_option_count(cmd) > 0) {
         fprintf(file, "\n");
+        fprintf(file, "\e[0;32m");
         fprintf(file, "options:\n");
+        fprintf(file, "\e[0;0m");
 
         for (size_t i = 0; i < cmd->args_len; i++) {
             arg arg = cmd->args[i];
@@ -114,6 +127,8 @@ static inline void cmd_fprint_options(
 
             fprintf(file, "  ");
             size_t len = 2;
+
+            fprintf(file, "\e[0;36m");
             
             if (arg->short_name != '\0') {
                 fprintf(file, "-%c", arg->short_name);
@@ -137,9 +152,11 @@ static inline void cmd_fprint_options(
                 len += 1 + strlen(arg->usage);
             }
 
+            fprintf(file, "\e[0;0m");
+
             if (arg->help) {
                 for (size_t j = len; j < 32; j++) fprintf(file, " ");
-                fprintf(file, "%s", arg->help);
+                fprintf(file, " %s", arg->help);
             }
 
             fprintf(file, "\n");
@@ -153,33 +170,49 @@ static inline void cmd_fprint_commands(
 ) {
     if (cmd->cmds_len > 0) {
         fprintf(file, "\n");
+        fprintf(file, "\e[0;32m");
         fprintf(file, "commands:\n");
+        fprintf(file, "\e[0;0m");
 
         for (size_t i = 0; i < cmd->cmds_len; i++) {
             struct cmd* subcmd = cmd->cmds[i];
 
+            fprintf(file, "\e[0;36m");
             fprintf(file, "  %s", subcmd->name);
+            fprintf(file, "\e[0;0m");
+
             size_t len = strlen(subcmd->name);
 
             if (subcmd->help) {
                 for (size_t j = len; j < 32; j++) fprintf(file, " ");
-                fprintf(file, "%s", subcmd->help);
+                fprintf(file, " %s", subcmd->help);
             }
 
             fprintf(file, "\n");
         }
     }
 }
- 
-static inline void cmd_fprint_help(
+
+static inline void cmd_fprint_path(
     FILE*     file,
     const cmd cmd
 ) {
-    if (cmd->help) {
-        fprintf(file, "%s\n\n", cmd->help);
+    if (cmd->parent) {
+        cmd_fprint_path(file, cmd->parent);
     }
 
-    fprintf(file, "usage: %s", cmd->name);
+    fprintf(file, " %s", cmd->name);
+}
+
+static inline void cmd_fprint_usage(
+    FILE*     file,
+    const cmd cmd
+) {
+    fprintf(file, "\e[0;32m");
+    fprintf(file, "usage:");
+    fprintf(file, "\e[0;36m");
+
+    cmd_fprint_path(file, cmd);
 
     for (size_t i = 0; i < cmd->args_len; i++) {
         if (arg_is_option(cmd->args[i])) continue;
@@ -194,11 +227,22 @@ static inline void cmd_fprint_help(
         fprintf(file, " [command]");
     }
 
-    fprintf(file, "\n");
+    fprintf(file, "\e[0;0m\n");
 
     cmd_fprint_arguments(file, cmd);
     cmd_fprint_options(file, cmd);
     cmd_fprint_commands(file, cmd);
+}
+ 
+static inline void cmd_fprint_help(
+    FILE*     file,
+    const cmd cmd
+) {
+    if (cmd->desc) {
+        fprintf(file, "%s\n\n", cmd->desc);
+    }
+
+    cmd_fprint_usage(file, cmd);
 }
 
 static int arg_parse_help(void* data, int argc, const char** argv) {
@@ -216,6 +260,7 @@ static inline cmd cmd_new(
 
     cmd->name     = name;
     cmd->help     = NULL;
+    cmd->desc     = NULL;
 
     cmd->data     = NULL;
     cmd->value    = 0;
@@ -244,6 +289,7 @@ static inline cmd cmd_new(
     cmd->cmds_len = 0;
     cmd->cmds_cap = 0;
     cmd->cmds     = NULL;
+    cmd->parent   = NULL;
 
     return cmd;
 }
@@ -251,6 +297,10 @@ static inline cmd cmd_new(
 static inline void cmd_free(cmd cmd) {
     for (size_t i = 0; i < cmd->cmds_len; i++) {
         cmd_free(cmd->cmds[i]);
+    }
+
+    for (size_t i = 0; i < cmd->args_len; i++) {
+        free(cmd->args[i]);
     }
 
     free(cmd->args);
@@ -263,6 +313,13 @@ static inline void cmd_help(
     const char* help
 ) {
     cmd->help = help;
+}
+
+static inline void cmd_desc(
+    cmd         cmd,
+    const char* desc
+) {
+    cmd->desc = desc;
 }
 
 static inline void cmd_value(
@@ -278,13 +335,6 @@ static inline cmd cmd_subcmd(
     cmd         cmd,
     const char* name
 ) { 
-    for (size_t i = 0; i < cmd->cmds_len; i++) {
-        if (strcmp(cmd->cmds[i]->name, name) == 0) {
-            fprintf(stderr, "failed to build command, duplicate subcommands `%s`", name);
-            exit(1);
-        }
-    }
-
     if (cmd->cmds_len == cmd->cmds_cap) {
         if (cmd->cmds_cap == 0) cmd->cmds_cap  = 1;
         else                    cmd->cmds_cap *= 2;
@@ -297,7 +347,8 @@ static inline cmd cmd_subcmd(
 
     cmd->cmds_len++;
 
-    cmd->cmds[cmd->cmds_len - 1] = cmd_new(name);
+    cmd->cmds[cmd->cmds_len - 1]         = cmd_new(name);
+    cmd->cmds[cmd->cmds_len - 1]->parent = cmd;
 
     return cmd->cmds[cmd->cmds_len - 1];
 }
@@ -379,6 +430,77 @@ static inline void arg_value(
     arg->parser = parser;
 }
 
+static inline int arg_err(const char* fmt, ...) {
+    va_list args;
+
+    fprintf(stderr, "\e[0;31merror:\e[0;0m ");
+
+    va_start(args, fmt);
+    int result = vfprintf(stderr, fmt, args);
+    va_end(args);
+
+    return result;
+}
+
+static inline bool cmd_validate(const cmd cmd) {
+    bool valid = true;
+
+    for (size_t i = 0; i < cmd->args_len; i++) {
+        for (size_t j = i + 1; j < cmd->args_len; j++) {
+            if (strcmp(cmd->args[i]->name, cmd->args[j]->name) == 0) {
+                arg_err(
+                    "invalid command, duplicate arguments: `%s`\n",
+                    cmd->args[i]->name
+                );
+
+                valid = false;
+            }
+
+            if (
+                cmd->args[i]->short_name != '\0' && 
+                cmd->args[i]->short_name == cmd->args[j]->short_name
+            ) {
+                arg_err(
+                    "invalid command, duplicate arguments: `-%c`\n",
+                    cmd->args[i]->short_name
+                );
+
+                valid = false;
+            }
+
+            if (
+                cmd->args[i]->long_name != NULL && 
+                cmd->args[j]->long_name != NULL && 
+                strcmp(cmd->args[i]->long_name, cmd->args[j]->long_name) == 0
+            ) {
+                arg_err(
+                    "invalid command, duplicate arguments: `--%s`\n",
+                    cmd->args[i]->long_name
+                );
+
+                valid = false;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < cmd->cmds_len; i++) {
+        for (size_t j = i + 1; j < cmd->cmds_len; j++) {
+            if (strcmp(cmd->cmds[i]->name, cmd->cmds[j]->name) == 0) {
+                arg_err(
+                    "invalid command, duplicate subcommands: `%s`\n",
+                    cmd->cmds[i]->name
+                );
+
+                valid = false;
+            }
+        }
+
+        valid &= cmd_validate(cmd->cmds[i]);
+    }
+
+    return valid;
+}
+
 static inline int cmd_parse_arg(
     const cmd    cmd,
     const arg    arg,
@@ -386,8 +508,22 @@ static inline int cmd_parse_arg(
     const char** argv
 ) {
     if (argc < (int) arg->parser.count) {
-        fprintf(stderr, "invalid number of arguments\n\n");
-        cmd_fprint_help(stderr, cmd);
+        arg_err("too few arguments, expected:\n");
+        fprintf(stderr, "  ");
+        fprintf(stderr, "\e[0;36m");
+
+        if (arg_is_option(arg)) {
+            fprintf(stderr, "%s", argv[-1]);
+            if (arg->usage) fprintf(stderr, " %s", arg->usage);
+        } else {
+            if (arg->usage) fprintf(stderr, "%s", arg->usage);
+            else            fprintf(stderr, "<%s>", arg->name);
+        }
+
+        fprintf(stderr, "\e[0;0m");
+        fprintf(stderr, "\n\n");
+
+        cmd_fprint_usage(stderr, cmd);
         exit(0);
     }
 
@@ -402,7 +538,7 @@ static inline int cmd_parse_arg(
 
         if (count < 0) {
             fprintf(stderr, "\n");
-            cmd_fprint_help(stderr, cmd);
+            cmd_fprint_usage(stderr, cmd);
             exit(0);
         }
 
@@ -426,8 +562,8 @@ static inline int cmd_parse_long(
         return cmd_parse_arg(cmd, arg, argc - 1, argv + 1);
     }
 
-    fprintf(stderr, "invalid option `%s`\n\n", argv[0]);
-    cmd_fprint_help(stderr, cmd);
+    arg_err("no such option: `%s`\n\n", argv[0]);
+    cmd_fprint_usage(stderr, cmd);
     exit(0);
 }
 
@@ -437,8 +573,8 @@ static inline int cmd_parse_short(
     const char** argv
 ) {
     if (argv[0][1] == '\0') {
-        fprintf(stderr, "invalid option `%s`\n\n", argv[0]);
-        cmd_fprint_help(stderr, cmd);
+        arg_err("no such option: `%s`\n\n", argv[0]);
+        cmd_fprint_usage(stderr, cmd);
         exit(0);
     }
 
@@ -460,8 +596,8 @@ static inline int cmd_parse_short(
             goto end;
         }
 
-        fprintf(stderr, "invalid option `%s`\n\n", argv[0]);
-        cmd_fprint_help(stderr, cmd);
+        arg_err("no such option: `%s`\n\n", argv[0]);
+        cmd_fprint_usage(stderr, cmd);
         exit(0);
 
         end: continue;
@@ -502,8 +638,6 @@ static inline void cmd_parse(
 
             if (arg_is_option(arg)) continue;
 
-            assert(arg->parser.count > 0 && "positional arguments must take at least one argument");
-
             i += cmd_parse_arg(cmd, arg, argc - i, argv + i) - 1;
 
             found_positional = true;
@@ -520,8 +654,8 @@ static inline void cmd_parse(
         }
 
         // report error and exit
-        fprintf(stderr, "invalid argument `%s`\n\n", argv[i]);
-        cmd_fprint_help(stderr, cmd);
+        arg_err("no such command: `%s`\n\n", argv[i]);
+        cmd_fprint_usage(stderr, cmd);
         exit(0);
     }
 
@@ -532,14 +666,20 @@ static inline void cmd_parse(
 
         if (arg_is_option(arg)) continue;
 
-        fprintf(stderr, "too few arguments, expected <%s>\n\n", arg->name); 
-        cmd_fprint_help(stderr, cmd);
+        arg_err("the following arguments were not provided:\n"); 
+        fprintf(stderr, "\e[0;36m");
+
+        if (arg->usage) fprintf(stderr, "  %s\n\n", arg->usage);
+        else            fprintf(stderr, "  <%s>\n\n", arg->name);
+
+        fprintf(stderr, "\e[0;0m");
+
+        cmd_fprint_usage(stderr, cmd);
         exit(0);
     }
 
     // if subcommand is expected, report error and exit
     if (cmd->cmds_len > 0) {
-        fprintf(stderr, "too few arguments, expected [command]\n\n"); 
         cmd_fprint_help(stderr, cmd);
         exit(0);
     }
@@ -565,7 +705,7 @@ static int arg_parse_int(void* data, int argc, const char** argv) {
     *(int*) data = strtol(argv[0], &end, 10);
 
     if (end < argv[0] + strlen(argv[0])) {
-        fprintf(stderr, "expected integer, found `%s`\n", argv[0]);
+        arg_err("expected integer, found: `%s`\n", argv[0]);
         return -1;
     }
 
@@ -598,7 +738,7 @@ static int arg_parse_float(void* data, int argc, const char** argv) {
     *(float*) data = strtof(argv[0], &end);
 
     if (end < argv[0] + strlen(argv[0])) {
-        fprintf(stderr, "expected float, found `%s`\n", argv[0]);
+        arg_err("expected float, found: `%s`\n", argv[0]);
         return -1;
     }
 
